@@ -476,6 +476,7 @@
 
       <label style="margin-top:6px;">Ordem de assento — 1º ao último, sentido do jogo</label>
       <div style="color:var(--bone-dim);font-size:0.78rem;margin:-6px 0 8px;">A presa de cada jogador é o próximo da lista; o predador é o anterior.</div>
+      <button class="btn ghost full" id="tb-randomize" style="margin-bottom:10px;">🎲 Sortear ordem aleatoriamente</button>
       <div id="tb-order"></div>
 
       <div class="row" style="margin-top:8px;">
@@ -536,6 +537,16 @@
     }
     function renderAll(){ renderAvailable(); renderOrder(); }
     renderAll();
+
+    modal.querySelector('#tb-randomize').onclick = ()=>{
+      if (order.length < 2){ toast('Adicione ao menos 2 jogadores antes de sortear'); return; }
+      for (let i = order.length - 1; i > 0; i--){
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      renderOrder();
+      toast('Ordem sorteada');
+    };
 
     modal.querySelector('#tb-cancel').onclick = closeModal;
     modal.querySelector('#tb-save').onclick = async ()=>{
