@@ -1,6 +1,6 @@
 {
-  "name": "VTES Torneios",
-  "short_name": "VTES",
+  "name": "Card Torpor",
+  "short_name": "Card Torpor",
   "description": "Gerencie torneios de Vampire: The Eternal Struggle - jogadores, decklists, mesas e cronometro.",
   "start_url": "./index.html",
   "id": "./index.html",
