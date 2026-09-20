@@ -165,10 +165,6 @@
     app.innerHTML = `
       <header class="top">
         <div class="crest">🩸</div>
-        <div>
-          <h1>VTES Torneios</h1>
-          <div class="sub">Vampire: The Eternal Struggle</div>
-        </div>
       </header>
       <div class="card">
         <h2>Novo torneio</h2>
@@ -235,7 +231,6 @@
       ['mesas','Rodadas & Mesas'],
       ['classificacao','Classificação'],
       ['cronometro','Cronômetro'],
-      ['cartas','Cartas'],
       ['compartilhar','Compartilhar'],
     ];
     app.innerHTML = `
@@ -274,7 +269,6 @@
     else if (state.tab==='mesas') renderTablesTab(slot, t);
     else if (state.tab==='classificacao') renderStandingsTab(slot, t);
     else if (state.tab==='cronometro') renderTimerTab(slot, t);
-    else if (state.tab==='cartas') renderCardsTab(slot, t);
     else if (state.tab==='compartilhar') renderShareTab(slot, t);
   }
 
@@ -729,114 +723,6 @@
   }
 
   /* ---------- ABA: Compartilhar (QR export/import) ---------- */
-  /* ---------- ABA: Cartas (busca de cartas oficiais de VTES via API pública KRCG) ---------- */
-  const cardDetailCache = {};
-  async function krcgSearch(query){
-    try{
-      const res = await fetch('https://v2.api.krcg.org/card_search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: [query] })
-      });
-      if (res.ok){
-        const data = await res.json();
-        if (Array.isArray(data)) return data;
-      }
-    }catch(e){ /* tenta o modo alternativo abaixo */ }
-    // modo alternativo: tenta como nome exato
-    try{
-      const res2 = await fetch('https://v2.api.krcg.org/card/' + encodeURIComponent(query));
-      if (res2.ok){
-        const card = await res2.json();
-        if (card && card.name) return [card.name];
-      }
-    }catch(e){ return null; }
-    return null;
-  }
-  async function krcgGetCard(name){
-    if (cardDetailCache[name]) return cardDetailCache[name];
-    try{
-      const res = await fetch('https://v2.api.krcg.org/card/' + encodeURIComponent(name));
-      if (!res.ok) return null;
-      const card = await res.json();
-      cardDetailCache[name] = card;
-      return card;
-    }catch(e){ return null; }
-  }
-
-  function renderCardsTab(slot, t){
-    slot.innerHTML = `
-      <div class="card">
-        <h2>Buscar cartas de VTES</h2>
-        <div style="color:var(--bone-dim);font-size:0.85rem;margin-bottom:10px;">
-          Busca em tempo real na base oficial de cartas (via KRCG). Requer internet.
-        </div>
-        <div class="row">
-          <input id="card-search-input" type="text" placeholder="Nome, texto, clã, tipo...">
-          <button class="btn primary" id="card-search-btn" style="flex:0 0 auto;">Buscar</button>
-        </div>
-        <div id="card-search-status" style="color:var(--bone-dim);font-size:0.85rem;"></div>
-        <div id="card-search-results"></div>
-      </div>
-      <div id="card-detail-host"></div>
-    `;
-    const input = slot.querySelector('#card-search-input');
-    const status = slot.querySelector('#card-search-status');
-    const results = slot.querySelector('#card-search-results');
-    async function doSearch(){
-      const q = input.value.trim();
-      if (!q){ toast('Digite algo para buscar'); return; }
-      status.textContent = 'Buscando...';
-      results.innerHTML = '';
-      const names = await krcgSearch(q);
-      if (names === null){
-        status.textContent = 'Não foi possível conectar à base de cartas agora. Verifique sua internet (essa busca não funciona no ambiente de teste do claude.ai — funciona no app hospedado no GitHub Pages).';
-        return;
-      }
-      if (names.length === 0){
-        status.textContent = 'Nenhuma carta encontrada.';
-        return;
-      }
-      const shown = names.slice(0, 40);
-      status.textContent = `${names.length} resultado(s)${names.length>40 ? ' — mostrando os 40 primeiros' : ''}.`;
-      results.innerHTML = shown.map(n=>`<div class="picker-item" data-card="${esc(n)}" style="cursor:pointer;"><label style="margin:0;flex:1;cursor:pointer;">${esc(n)}</label><span class="icon-btn">›</span></div>`).join('');
-      results.querySelectorAll('[data-card]').forEach(row=>{
-        row.onclick = ()=> showCardDetail(row.dataset.card, slot);
-      });
-    }
-    document.getElementById('card-search-btn').onclick = doSearch;
-    input.addEventListener('keydown', (e)=>{ if (e.key==='Enter') doSearch(); });
-  }
-
-  async function showCardDetail(name, slot){
-    const host = slot.querySelector('#card-detail-host');
-    host.innerHTML = `<div class="card">Carregando "${esc(name)}"...</div>`;
-    const card = await krcgGetCard(name);
-    if (!card){
-      host.innerHTML = `<div class="card">Não foi possível carregar os detalhes desta carta agora.</div>`;
-      return;
-    }
-    const types = Array.isArray(card.types) ? card.types.join(', ') : '';
-    const clans = Array.isArray(card.clans) ? card.clans.join(', ') : (card.clan || '');
-    const disc = Array.isArray(card.disciplines) ? card.disciplines.join(', ') : '';
-    const setsList = card.sets ? Object.keys(card.sets).join(', ') : (card.ordered_sets ? card.ordered_sets.join(', ') : '');
-    host.innerHTML = `
-      <div class="card">
-        <div style="display:flex;gap:14px;align-items:flex-start;">
-          ${card.url ? `<img src="${esc(card.url)}" alt="" style="width:90px;border-radius:6px;border:1px solid var(--line);flex:0 0 auto;" onerror="this.style.display='none'">` : ''}
-          <div style="flex:1;min-width:0;">
-            <h2 style="margin-bottom:4px;">${esc(card.printed_name || card.name)}</h2>
-            ${types ? `<div class="chip" style="margin-bottom:6px;">${esc(types)}</div>` : ''}
-            ${clans ? `<div style="color:var(--bone-dim);font-size:0.85rem;">Clã: ${esc(clans)}</div>` : ''}
-            ${disc ? `<div style="color:var(--bone-dim);font-size:0.85rem;">Disciplinas: ${esc(disc)}</div>` : ''}
-          </div>
-        </div>
-        ${card.card_text ? `<div class="divider"></div><div style="white-space:pre-line;color:var(--bone);font-size:0.98rem;">${esc(card.card_text)}</div>` : ''}
-        ${setsList ? `<div style="color:var(--bone-dim);font-size:0.8rem;margin-top:12px;">Sets: ${esc(setsList)}</div>` : ''}
-      </div>
-    `;
-    host.scrollIntoView({ behavior:'smooth', block:'nearest' });
-  }
 
   function renderShareTab(slot, t){
     slot.innerHTML = `
