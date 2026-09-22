@@ -259,6 +259,10 @@
   .modal-close{ display:flex; justify-content:flex-end; margin-bottom:-8px; }
 
   footer.foot{ text-align:center; color: var(--bone-dim); font-size:0.75rem; padding: 26px 0 10px; opacity:0.6; }
+
+  summary::-webkit-details-marker{ display:none; }
+  summary::before{ content:'▸ '; color:var(--gold-dim); }
+  details[open] summary::before{ content:'▾ '; }
 </style>
 </head>
 <body>

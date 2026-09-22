@@ -110,8 +110,9 @@
     tournaments: [],       // lista carregada do IndexedDB
     currentId: null,       // torneio aberto
     tab: 'jogadores',      // aba ativa dentro do torneio
-    timer: { remaining: 7200, total: 7200, running:false, intervalHandle:null, alarmHandle:null, tableLabel:'' },
+    timer: { remaining: 7200, total: 7200, running:false, intervalHandle:null, alarmHandle:null, endAt:null, firedAlarm:false, tableLabel:'' },
     audioCtx: null,
+    wakeLock: null,
     qrShare: { chunks:[], idx:0, playing:false, timerHandle:null },
     scan: { active:false, stream:null, collected:{}, total:0, tid:null, rafHandle:null },
     downloadsCap: null,
@@ -132,7 +133,7 @@
   }
   function standingsFor(t){
     const totals = {};
-    t.players.forEach(p=>{ totals[p.id] = { player:p, total:0, games:0 }; });
+    t.players.forEach(p=>{ totals[p.id] = { player:p, total:0, games:0, gw:0 }; });
     t.rounds.forEach(r=>{
       r.tables.forEach(tb=>{
         (tb.playerIds||[]).forEach(pid=>{
@@ -140,10 +141,11 @@
           const sc = Number(tb.scores?.[pid] || 0);
           totals[pid].total += sc;
           totals[pid].games += 1;
+          if (tb.gw && tb.gw[pid]) totals[pid].gw += 1;
         });
       });
     });
-    return Object.values(totals).sort((a,b)=> b.total - a.total || a.player.name.localeCompare(b.player.name));
+    return Object.values(totals).sort((a,b)=> b.total - a.total || b.gw - a.gw || a.player.name.localeCompare(b.player.name));
   }
 
   async function persist(t){
@@ -231,6 +233,7 @@
       ['mesas','Rodadas & Mesas'],
       ['classificacao','Classificação'],
       ['cronometro','Cronômetro'],
+      ['regras','Regras'],
       ['compartilhar','Compartilhar'],
     ];
     app.innerHTML = `
@@ -269,6 +272,7 @@
     else if (state.tab==='mesas') renderTablesTab(slot, t);
     else if (state.tab==='classificacao') renderStandingsTab(slot, t);
     else if (state.tab==='cronometro') renderTimerTab(slot, t);
+    else if (state.tab==='regras') renderRulesTab(slot, t);
     else if (state.tab==='compartilhar') renderShareTab(slot, t);
   }
 
@@ -442,10 +446,11 @@
         ${players.map((p,i)=>{
           const preyName = n>1 ? (t.players.find(x=>x.id===order[(i-1+n)%n])?.name || '—') : '—';
           const predName = n>1 ? (t.players.find(x=>x.id===order[(i+1)%n])?.name || '—') : '—';
+          const isGw = !!(tb.gw && tb.gw[p.id]);
           return `
           <div class="score-line" style="align-items:flex-start;flex-direction:column;gap:2px;padding:8px 0;">
             <div style="display:flex;justify-content:space-between;width:100%;">
-              <span class="pn">${i+1}º — ${clanBadge(p.clan)} ${esc(p.name)}</span>
+              <span class="pn">${i+1}º — ${clanBadge(p.clan)} ${esc(p.name)}${isGw ? ' <span class="chip" style="border-color:var(--gold);color:var(--gold);">GW</span>':''}</span>
               <span class="sc">${Number(tb.scores?.[p.id]||0).toLocaleString('pt-BR')} pts</span>
             </div>
             <div style="font-size:0.78rem;color:var(--bone-dim);">Presa: ${esc(preyName)} · Predador: ${esc(predName)}</div>
@@ -461,6 +466,7 @@
     const existing = tableId ? r.tables.find(x=>x.id===tableId) : null;
     let order = existing ? [...existing.playerIds] : [];
     const scoresLocal = existing ? {...existing.scores} : {};
+    const gwLocal = existing ? {...(existing.gw||{})} : {};
 
     const modal = openModal(`
       <h2>${existing? 'Editar mesa' : 'Nova mesa'} — ${esc(r.name)}</h2>
@@ -516,6 +522,10 @@
             <span style="flex:1;color:var(--bone-dim);font-size:0.85rem;">Pontuação</span>
             <input style="flex:0 0 110px;margin:0;" type="number" step="0.5" min="0" data-score="${pid}" value="${scoresLocal[pid] ?? 0}">
           </div>
+          <div class="row" style="align-items:center;margin:6px 0 0;">
+            <label style="flex:1;color:var(--bone-dim);font-size:0.85rem;margin:0;" for="gw-${pid}">GW (varreu a mesa)</label>
+            <input style="flex:0 0 auto;margin:0;width:auto;" type="checkbox" id="gw-${pid}" data-gw="${pid}" ${gwLocal[pid] ? 'checked':''}>
+          </div>
         </div>`;
       }).join('') : `<div style="padding:12px;color:var(--bone-dim);font-size:0.9rem;">Adicione jogadores acima para montar a mesa.</div>`;
       box.querySelectorAll('[data-up]').forEach(btn=>{
@@ -529,6 +539,9 @@
       });
       box.querySelectorAll('[data-score]').forEach(inp=>{
         inp.oninput = ()=>{ scoresLocal[inp.dataset.score] = Number(inp.value)||0; };
+      });
+      box.querySelectorAll('[data-gw]').forEach(chk=>{
+        chk.onchange = ()=>{ gwLocal[chk.dataset.gw] = chk.checked; };
       });
     }
     function renderAll(){ renderAvailable(); renderOrder(); }
@@ -549,11 +562,12 @@
       const label = modal.querySelector('#tb-label').value.trim() || `Mesa ${r.tables.length+1}`;
       if (order.length < 2){ toast('Adicione ao menos 2 jogadores'); return; }
       const scores = {};
-      order.forEach(pid=>{ scores[pid] = Number(scoresLocal[pid]) || 0; });
+      const gw = {};
+      order.forEach(pid=>{ scores[pid] = Number(scoresLocal[pid]) || 0; gw[pid] = !!gwLocal[pid]; });
       if (existing){
-        existing.label = label; existing.playerIds = order; existing.scores = scores;
+        existing.label = label; existing.playerIds = order; existing.scores = scores; existing.gw = gw;
       } else {
-        r.tables.push({ id: uid('tb'), label, playerIds: order, scores });
+        r.tables.push({ id: uid('tb'), label, playerIds: order, scores, gw });
       }
       await persist(t);
       closeModal();
@@ -568,15 +582,17 @@
     slot.innerHTML = `
       <div class="card">
         <h2>Classificação geral</h2>
+        <div style="color:var(--bone-dim);font-size:0.82rem;margin-bottom:10px;">Empate em pontos é desempatado por número de GW (Game Win).</div>
         ${st.length ? `
         <table class="plain">
-          <thead><tr><th>#</th><th>Jogador</th><th>Mesas</th><th>Total</th></tr></thead>
+          <thead><tr><th>#</th><th>Jogador</th><th>Mesas</th><th>GW</th><th>Total</th></tr></thead>
           <tbody>
             ${st.map((s,i)=>`
               <tr>
                 <td class="${i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':''}">${i+1}º</td>
                 <td>${clanBadge(s.player.clan)} ${esc(s.player.name)}</td>
                 <td>${s.games}</td>
+                <td>${s.gw}</td>
                 <td class="${i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':''}">${s.total.toLocaleString('pt-BR')}</td>
               </tr>
             `).join('')}
@@ -688,29 +704,64 @@
     modal.querySelector('#alarm-stop').onclick = ()=>{ stopAlarmLoop(); closeModal(); };
   }
 
+  /* ---------- Wake Lock (mantém a tela ligada enquanto o cronômetro roda) ---------- */
+  async function requestWakeLock(){
+    try{
+      if ('wakeLock' in navigator){
+        state.wakeLock = await navigator.wakeLock.request('screen');
+        state.wakeLock.addEventListener('release', ()=>{ state.wakeLock = null; });
+      }
+    }catch(e){ state.wakeLock = null; }
+  }
+  function releaseWakeLock(){
+    if (state.wakeLock){ try{ state.wakeLock.release(); }catch(e){} state.wakeLock = null; }
+  }
+
+  function computeRemaining(){
+    if (!state.timer.endAt) return state.timer.remaining;
+    return Math.max(0, Math.round((state.timer.endAt - Date.now())/1000));
+  }
+
   function startTimerTick(){
     if (state.timer.remaining<=0) state.timer.remaining = state.timer.total;
+    state.timer.endAt = Date.now() + state.timer.remaining*1000;
     state.timer.running = true;
+    state.timer.firedAlarm = false;
+    requestWakeLock();
     clearInterval(state.timer.intervalHandle);
-    state.timer.intervalHandle = setInterval(()=>{
-      state.timer.remaining = Math.max(0, state.timer.remaining-1);
-      updateTimerDigitsOnly();
-      if (state.timer.remaining<=0){
-        stopTimerTick(false);
-        toast('Tempo da mesa esgotado');
-        if (navigator.vibrate) navigator.vibrate([300,100,300,100,300,100,600]);
-        startAlarmLoop();
-        openAlarmModal();
-      }
-    }, 1000);
+    state.timer.intervalHandle = setInterval(tickCheck, 1000);
     if (state.tab==='cronometro') renderTournament();
   }
+  function tickCheck(){
+    state.timer.remaining = computeRemaining();
+    updateTimerDigitsOnly();
+    if (state.timer.remaining<=0 && !state.timer.firedAlarm){
+      state.timer.firedAlarm = true;
+      stopTimerTick(false);
+      toast('Tempo da mesa esgotado');
+      if (navigator.vibrate) navigator.vibrate([300,100,300,100,300,100,600]);
+      startAlarmLoop();
+      openAlarmModal();
+    }
+  }
   function stopTimerTick(keepFlagFalseAfter){
+    // guarda o tempo restante calculado na hora de pausar, antes de zerar o endAt
+    if (state.timer.running) state.timer.remaining = computeRemaining();
     clearInterval(state.timer.intervalHandle);
     state.timer.intervalHandle = null;
     state.timer.running = false;
+    state.timer.endAt = null;
+    releaseWakeLock();
     if (state.tab==='cronometro') renderTournament();
   }
+  // Ao voltar de tela apagada / app em segundo plano: recalcula na hora (evita atraso)
+  // e tenta ligar o Wake Lock de novo, pois o sistema o libera sozinho ao esconder a aba.
+  document.addEventListener('visibilitychange', ()=>{
+    if (document.visibilityState === 'visible' && state.timer.running){
+      tickCheck();
+      requestWakeLock();
+    }
+  });
   function updateTimerDigitsOnly(){
     const el = document.getElementById('timer-digits');
     if (!el) return;
@@ -723,6 +774,106 @@
   }
 
   /* ---------- ABA: Compartilhar (QR export/import) ---------- */
+
+  /* ---------- ABA: Regras (resumo próprio, em pt-BR) ---------- */
+  const RULES_SECTIONS = [
+    {
+      title: '1. Visão geral',
+      html: `<p>Vampire: The Eternal Struggle é um jogo de cartas para 2 a 5+ jogadores (multiplayer, jogado em mesa/roda), no qual cada participante controla um "Methuselah" — um mestre vampiro que comanda um grupo de vampiros (a Cripta) usando cartas de apoio, ações e recursos (a Biblioteca) para eliminar seus adversários e sobreviver como o último em jogo, ou somar mais pontos de vitória do que os demais quando o tempo da mesa se esgota.</p>`
+    },
+    {
+      title: '2. Montando o deck (Cripta + Biblioteca)',
+      html: `
+        <p>Cada deck é dividido em duas partes independentes:</p>
+        <ul style="padding-left:18px;color:var(--bone);">
+          <li><b>Cripta:</b> mínimo de 12 cartas de vampiro (sem limite máximo). Todos os vampiros da cripta devem pertencer ao mesmo "grupo" (um número que indica a época em que o personagem existiu) ou a dois grupos consecutivos.</li>
+          <li><b>Biblioteca:</b> entre 60 e 90 cartas — as ações, itens, aliados, equipamentos e efeitos que seus vampiros vão usar durante a partida.</li>
+        </ul>
+        <p>Não há limite de cópias de uma mesma carta em nenhuma das duas partes.</p>
+      `
+    },
+    {
+      title: '3. Preparação da mesa: presa e predador',
+      html: `
+        <p>Os jogadores sentam em círculo e o turno passa sempre no <b>sentido horário</b>. Cada jogador tem:</p>
+        <ul style="padding-left:18px;color:var(--bone);">
+          <li><b>Presa:</b> o jogador seguinte no sentido de jogo — quem você pode atacar diretamente (bleed) e tentar eliminar.</li>
+          <li><b>Predador:</b> o jogador anterior — o único que pode te atacar diretamente e te bloquear.</li>
+        </ul>
+        <p>É exatamente essa relação que o app calcula automaticamente na ordem de assento de cada mesa.</p>
+      `
+    },
+    {
+      title: '4. Recursos: Pool e Sangue',
+      html: `
+        <ul style="padding-left:18px;color:var(--bone);">
+          <li><b>Pool:</b> os "pontos de vida" do Methuselah. Começa geralmente em 30 (pode variar por formato). Se seu pool chega a zero, você é eliminado da partida.</li>
+          <li><b>Sangue (Blood):</b> o combustível dos vampiros. Cada vampiro tem uma capacidade máxima de sangue; ele é gasto para usar disciplinas e ativar habilidades, e recuperado principalmente na fase de untap/despertar.</li>
+        </ul>
+      `
+    },
+    {
+      title: '5. Estrutura de um turno',
+      html: `
+        <ol style="padding-left:18px;color:var(--bone);">
+          <li><b>Fase de Untap (Despertar):</b> todos os seus vampiros prontos (não em tórpore) são "destravados" e ficam disponíveis para agir.</li>
+          <li><b>Fase de Mestre:</b> você pode jogar 1 carta de mestre (normalmente), usada para recursos, equipamentos ou efeitos que afetam a mesa.</li>
+          <li><b>Fase de Minion (ação):</b> cada vampiro destravado pode tentar 1 ação — como atacar a presa (bleed), realizar uma ação política/voto, ou usar uma habilidade específica de carta. O predador do jogador pode tentar bloquear essa ação.</li>
+          <li><b>Combate (se houver bloqueio):</b> caso a ação seja bloqueada, entra-se em combate entre os dois vampiros envolvidos, trocando golpes (strike) até um deles recuar, ir a tórpore ou ser destruído.</li>
+        </ol>
+      `
+    },
+    {
+      title: '6. Disciplinas',
+      html: `
+        <p>Cada clã de vampiro tem acesso a um conjunto específico de disciplinas — poderes usados para ativar cartas da biblioteca. De forma geral, elas se dividem em:</p>
+        <ul style="padding-left:18px;color:var(--bone);">
+          <li><b>Físicas:</b> Celerity (velocidade), Fortitude (resistência), Potence (força) — cartas de combate e ações diretas.</li>
+          <li><b>Sociais/mentais:</b> Auspex (percepção), Dominate (controle mental), Presence (carisma), Obfuscate (furtividade) — cartas de bloqueio, controle e manipulação.</li>
+          <li><b>Ocultas:</b> Animalism, Protean, Thaumaturgy, Necromancy, entre outras — poderes mais raros e temáticos de clãs específicos.</li>
+        </ul>
+        <p>Um símbolo de disciplina em formato de losango indica nível superior (o vampiro pode usar o efeito avançado da carta); em formato quadrado, apenas o nível básico.</p>
+      `
+    },
+    {
+      title: '7. Vitória e critério de desempate (GW)',
+      html: `
+        <ul style="padding-left:18px;color:var(--bone);">
+          <li><b>GW (Game Win):</b> um jogador consegue um GW quando é o único que resta na mesa com vampiros ainda em jogo — todos os outros foram eliminados. Isso garante a pontuação máxima daquela mesa.</li>
+          <li><b>Fim de rodada por tempo:</b> se o tempo da mesa acabar sem ninguém conseguir o GW, a pontuação (VP) é distribuída conforme o estado da partida no momento em que o tempo esgota, seguindo os critérios definidos pelo juiz/organizador.</li>
+          <li><b>Desempate no torneio:</b> quando dois ou mais jogadores terminam com o mesmo total de pontos (VP) somando todas as mesas, o desempate oficial é pelo <b>número de GWs</b> conquistados — por isso o app agora marca e conta os GWs de cada jogador automaticamente na Classificação.</li>
+        </ul>
+      `
+    },
+    {
+      title: '8. Glossário rápido',
+      html: `
+        <ul style="padding-left:18px;color:var(--bone);">
+          <li><b>Bleed:</b> ação de ataque direto ao pool da presa.</li>
+          <li><b>Block:</b> ação do predador para tentar impedir a ação de sua presa.</li>
+          <li><b>Tórpore:</b> um vampiro "nocauteado" (sem sangue/derrotado em combate), fora de jogo até ser desperto novamente.</li>
+          <li><b>Diablerie:</b> ato de destruir um vampiro em tórpore para roubar sua essência/geração — arriscado, mas poderoso.</li>
+          <li><b>Ação política/voto:</b> cartas que afetam a mesa inteira por votação, exigindo maioria de votos para serem aprovadas.</li>
+          <li><b>VP (Victory Points):</b> pontos de vitória acumulados ao longo do torneio — o que o app já rastreia na Classificação.</li>
+        </ul>
+        <p style="color:var(--bone-dim);font-size:0.82rem;margin-top:14px;">Este resumo cobre o essencial para acompanhar uma partida e um torneio. Para as regras oficiais completas, ferratas e casos específicos, consulte sempre o rulebook oficial da VEKN (vekn.net).</p>
+      `
+    },
+  ];
+  function renderRulesTab(slot, t){
+    slot.innerHTML = `
+      <div class="card">
+        <h2>Regras de VTES</h2>
+        <div style="color:var(--bone-dim);font-size:0.85rem;margin-bottom:12px;">Resumo de referência rápida. Toque em cada seção para abrir.</div>
+        ${RULES_SECTIONS.map((s,i)=>`
+          <details ${i===0?'open':''} style="margin-bottom:8px;border:1px solid var(--line);border-radius:8px;overflow:hidden;">
+            <summary style="cursor:pointer;padding:12px 14px;font-family:'Cinzel',serif;color:var(--gold);font-size:0.9rem;list-style:none;">${esc(s.title)}</summary>
+            <div style="padding:0 14px 14px;font-size:0.95rem;line-height:1.5;">${s.html}</div>
+          </details>
+        `).join('')}
+      </div>
+    `;
+  }
 
   function renderShareTab(slot, t){
     slot.innerHTML = `
