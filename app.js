@@ -371,6 +371,62 @@
     }
   }
 
+  async function exportResultsExcel(t){
+    if (typeof XLSX === 'undefined'){
+      toast('Não foi possível carregar a biblioteca de Excel. Verifique sua internet e tente de novo.');
+      return;
+    }
+    const st = standingsFor(t);
+    const wsStandingsData = [
+      ['#', 'Jogador', 'Clã', 'Mesas', 'GW', 'Total'],
+      ...st.map((s,i)=>[ i+1, s.player.name, clanById(s.player.clan)?.name || '', s.games, s.gw, s.total ])
+    ];
+    const wsResultsData = [
+      ['Rodada', 'Mesa', 'Assento', 'Jogador', 'Clã', 'Deck', 'Presa', 'Predador', 'Pontuação', 'GW']
+    ];
+    t.rounds.forEach(r=>{
+      r.tables.forEach(tb=>{
+        const order = tb.playerIds || [];
+        const n = order.length;
+        order.forEach((pid,i)=>{
+          const p = t.players.find(x=>x.id===pid);
+          if (!p) return;
+          const preyName = n>1 ? (t.players.find(x=>x.id===order[(i-1+n)%n])?.name || '') : '';
+          const predName = n>1 ? (t.players.find(x=>x.id===order[(i+1)%n])?.name || '') : '';
+          wsResultsData.push([
+            r.name, tb.label, i+1, p.name, clanById(p.clan)?.name || '', p.deckName || '',
+            preyName, predName, Number(tb.scores?.[pid]||0), (tb.gw && tb.gw[pid]) ? 'Sim' : ''
+          ]);
+        });
+      });
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wsStandingsData), 'Classificação');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wsResultsData), 'Resultados por mesa');
+    const filename = `vtes_${(t.name||'torneio').replace(/[^a-z0-9]+/gi,'_').toLowerCase()}_resultados.xlsx`;
+    const wbArray = XLSX.write(wb, { type:'array', bookType:'xlsx' });
+    const blob = new Blob([wbArray], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const cap = await ensureDownloads();
+    if (cap){
+      try{
+        await cap.save({ filename, data: blob });
+        toast('Arquivo enviado para download');
+        return;
+      }catch(e){ /* segue para fallback */ }
+    }
+    try{
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 4000);
+      toast('Arquivo baixado');
+    }catch(e){
+      toast('Não foi possível exportar neste navegador');
+    }
+  }
+
+
   /* ---------- ABA: Rodadas & Mesas ---------- */
   function renderTablesTab(slot, t){
     slot.innerHTML = `
@@ -581,8 +637,11 @@
     const st = standingsFor(t);
     slot.innerHTML = `
       <div class="card">
-        <h2>Classificação geral</h2>
-        <div style="color:var(--bone-dim);font-size:0.82rem;margin-bottom:10px;">Empate em pontos é desempatado por número de GW (Game Win).</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+          <h2 style="margin-bottom:0;">Classificação geral</h2>
+          <button class="btn ghost" id="btn-export-excel">Exportar Excel</button>
+        </div>
+        <div style="color:var(--bone-dim);font-size:0.82rem;margin:8px 0 10px;">Empate em pontos é desempatado por número de GW (Game Win).</div>
         ${st.length ? `
         <table class="plain">
           <thead><tr><th>#</th><th>Jogador</th><th>Mesas</th><th>GW</th><th>Total</th></tr></thead>
@@ -601,6 +660,7 @@
         ` : `<div class="empty"><div class="glyph">🏆</div>Ainda não há mesas com pontuação.</div>`}
       </div>
     `;
+    document.getElementById('btn-export-excel').onclick = ()=> exportResultsExcel(t);
   }
 
   /* ---------- ABA: Cronômetro ---------- */
