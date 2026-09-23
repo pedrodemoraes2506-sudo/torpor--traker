@@ -407,8 +407,8 @@
         order.forEach((pid,i)=>{
           const p = t.players.find(x=>x.id===pid);
           if (!p) return;
-          const preyName = n>1 ? (t.players.find(x=>x.id===order[(i-1+n)%n])?.name || '') : '';
-          const predName = n>1 ? (t.players.find(x=>x.id===order[(i+1)%n])?.name || '') : '';
+          const preyName = n>1 ? (t.players.find(x=>x.id===order[(i+1)%n])?.name || '') : '';
+          const predName = n>1 ? (t.players.find(x=>x.id===order[(i-1+n)%n])?.name || '') : '';
           wsResultsData.push([
             r.name, tb.label, i+1, p.name, clanById(p.clan)?.name || '', p.deckName || '',
             preyName, predName, Number(tb.scores?.[pid]||0), (tb.gw && tb.gw[pid]) ? 'Sim' : ''
