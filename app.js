@@ -371,9 +371,25 @@
     }
   }
 
+  let xlsxLoadPromise = null;
+  function ensureXlsxLib(){
+    if (typeof XLSX !== 'undefined') return Promise.resolve(true);
+    if (xlsxLoadPromise) return xlsxLoadPromise;
+    xlsxLoadPromise = new Promise((resolve)=>{
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = ()=> resolve(typeof XLSX !== 'undefined');
+      s.onerror = ()=> { xlsxLoadPromise = null; resolve(false); };
+      document.head.appendChild(s);
+    });
+    return xlsxLoadPromise;
+  }
+
   async function exportResultsExcel(t){
-    if (typeof XLSX === 'undefined'){
-      toast('Não foi possível carregar a biblioteca de Excel. Verifique sua internet e tente de novo.');
+    toast('Preparando arquivo...');
+    const ok = await ensureXlsxLib();
+    if (!ok){
+      toast('Não foi possível carregar a biblioteca de Excel agora. Verifique sua internet e tente de novo em alguns segundos.');
       return;
     }
     const st = standingsFor(t);
